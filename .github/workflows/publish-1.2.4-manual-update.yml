@@ -1,0 +1,130 @@
+name: Publish Transport NSK 1.2.4 manual updater
+
+on:
+  push:
+    branches:
+      - recovery/1.2.4-preview
+    paths:
+      - .github/workflows/publish-1.2.4-manual-update.yml
+      - recovery/manual-update.iss
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'SelfmotivationN1/transport-nsk-releases'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build and test an in-place update
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'transport-nsk-manual-update'
+          $app = Join-Path $root 'installed'
+          $payload = Join-Path $root 'payload'
+          $releases = 'https://github.com/SelfmotivationN1/transport-nsk-releases/releases/download'
+          $portable = Join-Path $root 'preview.zip'
+          $oldSetup = Join-Path $root 'TransportNSK-1.2.3-Setup.exe'
+          $setup = Join-Path $root 'TransportNSK-1.2.4-ManualUpdate.exe'
+          $appName = 'Транспорт НСК.exe'
+          $expectedOldExe = 'ccf2329c8a175a8daedfa16c3bcd8284d1e4717dff5620bc99ce48f9e733cdb3'
+          $expectedNewExe = '2e26470046a508c9fb31def6e2cffa2361bc9f51924888c3a8974bce30ea80ca'
+          $quiet = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-')
+          New-Item -ItemType Directory -Path $root | Out-Null
+
+          function Assert-Hash($path, $expected) {
+            if ((Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ne $expected) {
+              throw "Unexpected SHA-256 for $path."
+            }
+          }
+
+          function Start-Setup($path, $arguments) {
+            (Start-Process -FilePath $path -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru).ExitCode
+          }
+
+          Invoke-WebRequest -Uri "$releases/v1.2.4-preview.1/TransportNSK-1.2.4-preview.1-Portable.zip" -OutFile $portable
+          Assert-Hash $portable 'a920b3a632cbe200d6e51f65485e134eeff2ebc53dcef032d6f4522781b9b618'
+          Expand-Archive -LiteralPath $portable -DestinationPath $payload
+          Assert-Hash (Join-Path $payload $appName) $expectedNewExe
+
+          $compiler = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          if (!$compiler) { $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe' }
+          if (!(Test-Path -LiteralPath $compiler -PathType Leaf)) { throw 'Inno Setup compiler is missing.' }
+          $script = Join-Path $root 'manual-update.iss'
+          Get-Content -Raw -LiteralPath 'recovery/manual-update.iss' | Set-Content -LiteralPath $script -Encoding utf8BOM
+          & $compiler "/DPayloadDir=$payload" "/O$root" $script
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'Manual updater compilation failed.' }
+
+          if ((Start-Setup $setup $quiet) -eq 0) {
+            throw 'Updater accepted a profile with no existing installation.'
+          }
+
+          Invoke-WebRequest -Uri "$releases/v1.2.3/TransportNSK-1.2.3-Setup.exe" -OutFile $oldSetup
+          Assert-Hash $oldSetup 'dda9a6d0d495834fc1bd96609c42ce5dd285c7142d16e00aedb30bc4d58877fd'
+          $oldResult = Start-Setup $oldSetup ($quiet + @(('/DIR="{0}"' -f $app), '/TASKS=""'))
+          if ($oldResult -ne 0) { throw "Previous setup returned $oldResult." }
+
+          $exe = Join-Path $app $appName
+          Assert-Hash $exe $expectedOldExe
+          $userSettings = 'HKCU:\Software\TransportNSK'
+          $workspace = Get-ItemPropertyValue -LiteralPath $userSettings -Name WorkspaceRoot
+          $uninstaller = Get-ChildItem -File -LiteralPath $app | Where-Object Name -Match '^unins.*\.(dat|exe)$'
+          if (!$workspace -or @($uninstaller).Count -lt 2) { throw 'Previous setup metadata is incomplete.' }
+          $uninstallHashes = $uninstaller | Get-FileHash -Algorithm SHA256
+
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          function Invoke-Smoke($version, $filename) {
+            $smoke = Join-Path $root $filename
+            $process = Start-Process -FilePath $exe -WorkingDirectory $app -ArgumentList @(
+              '--smoke-test', ('"{0}"' -f $smoke)
+            ) -WindowStyle Hidden -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "Application returned $($process.ExitCode)." }
+            $result = Get-Content -Raw -LiteralPath $smoke | ConvertFrom-Json
+            if ($result.version -ne $version -or !$result.frozen -or $result.workspace -ne $workspace -or $result.tabs -ne 8 -or !$result.route_solver) {
+              throw "App $version did not start with the installed workspace."
+            }
+            $result
+          }
+
+          $before = Invoke-Smoke '1.2.3' 'old-smoke.json'
+          $databaseHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $before.database).Hash
+          $marker = Join-Path $workspace 'workspace-test.txt'
+          Set-Content -LiteralPath $marker -Value 'workspace preservation test'
+          $markerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $marker).Hash
+
+          $other = Join-Path $root 'wrong-path'
+          $wrongResult = Start-Setup $setup ($quiet + @(('/DIR="{0}"' -f $other)))
+          if ($wrongResult -eq 0 -or (Test-Path -LiteralPath (Join-Path $other $appName))) {
+            throw 'Updater accepted an override of the installed app directory.'
+          }
+          Assert-Hash $exe $expectedOldExe
+
+          $result = Start-Setup $setup $quiet
+          if ($result -ne 0) { throw "Manual updater returned $result." }
+          Assert-Hash $exe $expectedNewExe
+          Assert-Hash $before.database $databaseHash
+          Assert-Hash $marker $markerHash
+          foreach ($file in $uninstallHashes) { Assert-Hash $file.Path $file.Hash }
+          if ((Get-ItemPropertyValue -LiteralPath $userSettings -Name WorkspaceRoot) -ne $workspace) {
+            throw 'The existing workspace setting changed.'
+          }
+          $after = Invoke-Smoke '1.2.4' 'new-smoke.json'
+          if ($after.database -ne $before.database) { throw 'The upgraded app selected a different database.' }
+          $checksum = (Get-FileHash -Algorithm SHA256 -LiteralPath $setup).Hash.ToLowerInvariant()
+          Set-Content -Encoding ascii -LiteralPath "$setup.sha256" -Value "$checksum  TransportNSK-1.2.4-ManualUpdate.exe"
+      - name: Upload the manual updater to the preview release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'transport-nsk-manual-update'
+          $setup = Join-Path $root 'TransportNSK-1.2.4-ManualUpdate.exe'
+          gh release upload v1.2.4-preview.1 --repo $env:GITHUB_REPOSITORY $setup "$setup.sha256"
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub asset upload failed.' }
