@@ -1,0 +1,99 @@
+name: Publish Transport NSK 1.2.4 portable preview
+
+on:
+  push:
+    branches:
+      - recovery/1.2.4-preview
+    paths:
+      - .github/workflows/publish-1.2.4-preview.yml
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'SelfmotivationN1/transport-nsk-releases'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build and verify portable preview
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PYTHONUTF8 = '1'
+          python -m pip install --disable-pip-version-check pyinstaller==6.21.0
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller installation failed.' }
+
+          $root = Join-Path $env:RUNNER_TEMP 'transport-nsk-preview'
+          $installer = Join-Path $root 'TransportNSK-1.2.3-Setup.exe'
+          $installDir = Join-Path $root 'original'
+          $appDir = Join-Path $root 'portable'
+          $testDir = Join-Path $root 'test-workspace'
+          New-Item -ItemType Directory -Path $root,$appDir,$testDir | Out-Null
+          Invoke-WebRequest -Uri 'https://github.com/SelfmotivationN1/transport-nsk-releases/releases/download/v1.2.3/TransportNSK-1.2.3-Setup.exe' -OutFile $installer
+          $expectedInstallerHash = 'dda9a6d0d495834fc1bd96609c42ce5dd285c7142d16e00aedb30bc4d58877fd'
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash -ne $expectedInstallerHash) {
+            throw 'Release 1.2.3 installer hash differs from its published checksum.'
+          }
+
+          $setup = Start-Process -FilePath $installer -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+            ('/DIR="{0}"' -f $installDir), '/TASKS=""'
+          ) -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Release 1.2.3 setup returned $($setup.ExitCode)." }
+          $original = Join-Path $installDir 'Транспорт НСК.exe'
+          $bundle = Join-Path $root 'bundle'
+          python -B recovery/transport_recovery.py extract $original $bundle
+          if ($LASTEXITCODE -ne 0) { throw 'Verified archive extraction failed.' }
+          python -B recovery/check_transport.py $bundle
+          if ($LASTEXITCODE -ne 0) { throw 'Regression checks failed.' }
+          $preview = Join-Path $appDir 'Транспорт НСК.exe'
+          python -B recovery/build_portable_preview.py $original $preview
+          if ($LASTEXITCODE -ne 0) { throw 'Portable preview build failed.' }
+          Copy-Item -LiteralPath (Join-Path $installDir 'licenses') -Destination $appDir -Recurse
+
+          $env:TRANSPORT_NSK_WORKSPACE = $testDir
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $smoke = Join-Path $root 'smoke.json'
+          $application = Start-Process -FilePath $preview -WorkingDirectory $testDir -ArgumentList @(
+            '--smoke-test', ('"{0}"' -f $smoke)
+          ) -Wait -PassThru
+          if ($application.ExitCode -ne 0) { throw "Packaged app returned $($application.ExitCode)." }
+          $result = Get-Content -Raw -LiteralPath $smoke | ConvertFrom-Json
+          if ($result.version -ne '1.2.4' -or !$result.frozen -or $result.workspace -ne $testDir -or $result.tabs -ne 8 -or !$result.route_solver) {
+            throw 'Packaged application failed the smoke check.'
+          }
+
+          $archiveName = 'TransportNSK-1.2.4-preview.1-Portable.zip'
+          $package = Join-Path $root $archiveName
+          Compress-Archive -Path (Join-Path $appDir '*') -DestinationPath $package
+          $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $package).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath (Join-Path $root 'SHA256SUMS.txt') -Value "$sha  $archiveName" -Encoding ascii
+      - name: Publish GitHub prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'transport-nsk-preview'
+          $tag = 'v1.2.4-preview.1'
+          $notes = Join-Path $root 'notes.md'
+          @'
+          Переносимая тестовая сборка «Транспорт НСК» для Windows x64.
+
+          - Исправлено распознавание накладных в маршрутных PDF, где в комментарии указан телефон.
+          - Добавлен импорт читаемого маршрутного листа без напечатанных итогов. Напечатанные итоги по-прежнему сверяются.
+
+          Распакуйте архив в отдельную папку и запустите «Транспорт НСК.exe». Сборка предназначена для ручной проверки. Стабильный канал автообновлений продолжает использовать подписанный выпуск.
+          '@ | Set-Content -LiteralPath $notes -Encoding utf8
+          gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --latest=false --title 'Транспорт НСК 1.2.4 Preview 1' --notes-file $notes (Join-Path $root 'TransportNSK-1.2.4-preview.1-Portable.zip') (Join-Path $root 'SHA256SUMS.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release creation failed.' }
