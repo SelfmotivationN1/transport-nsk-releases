@@ -1,11 +1,17 @@
 #ifndef PayloadDir
   #error PayloadDir must point to the verified portable preview files.
 #endif
+#ifndef UpdateVersion
+  #define UpdateVersion "1.2.4"
+#endif
+#ifndef OutputName
+  #define OutputName "TransportNSK-1.2.4-ManualUpdate"
+#endif
 
 [Setup]
 AppId={{22D7D156-5DCE-4474-8608-413976D66AEC}
 AppName=Транспорт НСК
-AppVersion=1.2.4
+AppVersion={#UpdateVersion}
 AppPublisher=НСК / @iSelfmotivation
 AppSupportURL=https://github.com/SelfmotivationN1/transport-nsk-releases
 AppMutex=TransportNSK.Application.Running
@@ -19,7 +25,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Uninstallable=no
 CloseApplications=no
 RestartApplications=no
-OutputBaseFilename=TransportNSK-1.2.4-ManualUpdate
+OutputBaseFilename={#OutputName}
 Compression=lzma2/fast
 WizardStyle=modern
 
@@ -28,6 +34,9 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Files]
 Source: "{#PayloadDir}\Транспорт НСК.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+[Run]
+Filename: "{app}\Транспорт НСК.exe"; WorkingDir: "{app}"; Check: FromUpdate; Flags: nowait runasoriginaluser
 
 [Code]
 const
@@ -66,3 +75,7 @@ begin
     Result := 'Обновление можно установить только в папку существующего приложения.';
 end;
 
+function FromUpdate(): Boolean;
+begin
+  Result := ExpandConstant('{param:FROMUPDATE|0}') = '1';
+end;

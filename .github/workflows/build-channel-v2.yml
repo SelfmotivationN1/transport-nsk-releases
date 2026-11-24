@@ -1,0 +1,50 @@
+name: Build and publish Transport NSK channel v2 installers
+
+on:
+  push:
+    branches:
+      - recovery/channel-v2
+    paths:
+      - .github/workflows/build-channel-v2.yml
+      - recovery/channel/build_updates.ps1
+      - recovery/manual-update.iss
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'SelfmotivationN1/transport-nsk-releases'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build and exercise both installers
+        shell: pwsh
+        run: ./recovery/channel/build_updates.ps1
+      - name: Publish tested installers
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'transport-nsk-channel-v2'
+          $notes = @{
+            '1.2.5' = 'Разовый переход на новый канал обновлений для установленных копий. Закройте программу, запустите установщик обновления и откройте приложение обычным ярлыком. Сохраняются рабочая папка, база и история. Включено исправление импорта маршрутных PDF.'
+            '1.2.6' = 'Первое обновление нового канала. После перехода на 1.2.5 его можно получить из раздела «Настройки → Проверить обновления». Включено исправление импорта маршрутных PDF.'
+          }
+          foreach ($version in @('1.2.5','1.2.6')) {
+            $setup = Join-Path $root "TransportNSK-$version-Setup.exe"
+            $notePath = Join-Path $root "release-notes-$version.md"
+            Set-Content -Encoding utf8 -LiteralPath $notePath -Value $notes[$version]
+            gh release create "v$version-channel-v2" --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --latest=false --title "Транспорт НСК $version — канал обновлений" --notes-file $notePath $setup "$setup.sha256"
+            if ($LASTEXITCODE -ne 0) { throw "Could not publish release $version." }
+          }
