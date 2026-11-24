@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Транспорт НСК — обновления</title>
+    <language>ru</language>
+    <item>
+      <title>Транспорт НСК 1.2.6</title>
+      <description>Первое обновление нового канала. Исправлен импорт маршрутных PDF. Сохраняются рабочая папка, база и история.</description>
+      <pubDate>Tue, 24 Nov 2026 12:22:15 GMT</pubDate>
+      <enclosure url="https://github.com/SelfmotivationN1/transport-nsk-releases/releases/download/v1.2.6-channel-v2/TransportNSK-1.2.6-Setup.exe" length="86727011" type="application/octet-stream" sparkle:version="1.2.6" sparkle:shortVersionString="1.2.6" sparkle:os="windows" sparkle:edSignature="olSrsrqB/fLi6MdVZMQK6rMR+p86AClaF1iQg6CK2wQJJ+8GTz5ms8s2NOU3oAoi7hbcFXnHh4v2qgRZPocsCQ==" />
+    </item>
+  </channel>
+</rss>
