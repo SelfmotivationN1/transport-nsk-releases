@@ -14,9 +14,9 @@ AppName=Транспорт НСК
 AppVersion={#UpdateVersion}
 AppPublisher=НСК / @iSelfmotivation
 AppSupportURL=https://github.com/SelfmotivationN1/transport-nsk-releases
-AppMutex=TransportNSK.Application.Running
 DefaultDirName={code:ExistingInstallDirectory}
-DisableDirPage=yes
+DisableDirPage=no
+AppendDefaultDirName=no
 DisableProgramGroupPage=yes
 UsePreviousAppDir=no
 PrivilegesRequired=lowest
@@ -45,22 +45,41 @@ const
 var
   InstallDirectory: String;
 
+function FromUpdate(): Boolean;
+begin
+  Result := ExpandConstant('{param:FROMUPDATE|0}') = '1';
+end;
+
+function NormalDirectory(Directory: String): String;
+begin
+  Result := '';
+  if Directory <> '' then
+    Result := RemoveBackslashUnlessRoot(ExpandFileName(Directory));
+end;
+
+function HasApplication(Directory: String): Boolean;
+begin
+  Result := (Directory <> '') and
+    FileExists(AddBackslash(Directory) + 'Транспорт НСК.exe');
+end;
+
 function InitializeSetup(): Boolean;
 begin
-  Result := RegQueryStringValue(HKCU64, UninstallKey, 'InstallLocation', InstallDirectory);
-  if not Result then
-    Result := RegQueryStringValue(HKCU32, UninstallKey, 'InstallLocation', InstallDirectory);
-  if Result and (InstallDirectory <> '') then
+  if FromUpdate() then
   begin
-    InstallDirectory := RemoveBackslashUnlessRoot(ExpandFileName(InstallDirectory));
-    Result := FileExists(AddBackslash(InstallDirectory) + 'installed.marker') and
-      FileExists(AddBackslash(InstallDirectory) + 'Транспорт НСК.exe');
-  end
-  else
-    Result := False;
+    InstallDirectory := NormalDirectory(ExpandConstant('{param:DIR|}'));
+    Result := HasApplication(InstallDirectory);
+    if not Result then
+      SuppressibleMsgBox('Не найдена папка запущенной копии «Транспорт НСК».', mbError, MB_OK, MB_OK);
+    exit;
+  end;
 
-  if not Result then
-    SuppressibleMsgBox('Установка «Транспорт НСК» в текущем профиле Windows не найдена.', mbError, MB_OK, MB_OK);
+  if not RegQueryStringValue(HKCU64, UninstallKey, 'InstallLocation', InstallDirectory) then
+    RegQueryStringValue(HKCU32, UninstallKey, 'InstallLocation', InstallDirectory);
+  InstallDirectory := NormalDirectory(InstallDirectory);
+  if not HasApplication(InstallDirectory) then
+    InstallDirectory := ExpandConstant('{src}');
+  Result := True;
 end;
 
 function ExistingInstallDirectory(Param: String): String;
@@ -68,14 +87,45 @@ begin
   Result := InstallDirectory;
 end;
 
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  Result := '';
-  if CompareText(RemoveBackslashUnlessRoot(ExpandFileName(ExpandConstant('{app}'))), InstallDirectory) <> 0 then
-    Result := 'Обновление можно установить только в папку существующего приложения.';
+  Result := FromUpdate() and (PageID = wpSelectDir);
 end;
 
-function FromUpdate(): Boolean;
+function TargetReady(Directory: String): Boolean;
+var
+  Stream: TFileStream;
 begin
-  Result := ExpandConstant('{param:FROMUPDATE|0}') = '1';
+  Result := False;
+  try
+    Stream := TFileStream.Create(AddBackslash(Directory) + 'Транспорт НСК.exe', fmOpenReadWrite or fmShareExclusive);
+    Stream.Free;
+    Result := True;
+  except
+    Log('Waiting for write access to the target executable.');
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Target: String;
+  Retry: Integer;
+begin
+  Target := NormalDirectory(ExpandConstant('{app}'));
+  if not HasApplication(Target) or (FromUpdate() and (CompareText(Target, InstallDirectory) <> 0)) then
+  begin
+    Result := 'Обновление можно установить только в папку существующего приложения.';
+    exit;
+  end;
+
+  if FromUpdate() then
+    for Retry := 1 to 80 do
+    begin
+      if TargetReady(Target) then break;
+      Sleep(250);
+    end;
+
+  Result := '';
+  if not TargetReady(Target) then
+    Result := 'Сохраните работу, закройте «Транспорт НСК» в выбранной папке и повторите обновление.';
 end;

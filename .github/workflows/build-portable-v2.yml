@@ -1,0 +1,50 @@
+name: Build and publish Transport NSK 1.2.7
+
+on:
+  push:
+    branches:
+      - recovery/portable-v2
+    paths:
+      - .github/workflows/build-portable-v2.yml
+      - recovery/channel/build_portable_release.ps1
+      - recovery/channel/test_update_target.py
+      - recovery/manual-update.iss
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.repository == 'SelfmotivationN1/transport-nsk-releases'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Exercise portable and installed updates on Windows
+        shell: pwsh
+        run: ./recovery/channel/build_portable_release.ps1
+      - name: Publish the tested packages
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'transport-nsk-127'
+          $notes = Join-Path $root 'notes.md'
+          @'
+          - Исправлен импорт маршрутных листов с телефонными номерами в примечаниях и полностью читаемых листов без печатной строки итогов.
+          - Переносная версия теперь обновляется из программы. Установщик получает путь к самой программе отдельно от пути к рабочей базе.
+          - Для первого перехода со старого канала запустите установщик вручную и укажите существующую папку приложения. Затем доступны обновления из настроек программы.
+          '@ | Set-Content -Encoding utf8 -LiteralPath $notes
+          $setup = Join-Path $root 'TransportNSK-1.2.7-Setup.exe'
+          $zip = Join-Path $root 'TransportNSK-1.2.7-Portable.zip'
+          gh release create v1.2.7-channel-v2 --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --latest=false --title 'Транспорт НСК 1.2.7 — переносная версия и автообновление' --notes-file $notes $setup "$setup.sha256" $zip "$zip.sha256"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish 1.2.7.' }
